@@ -175,7 +175,7 @@ def main():
     num_doubts = st.number_input("Enter number of doubts you want to ask:", min_value=1, step=1, value=1)
 
     # Gemini API configuration
-    api = "AIzaSyDUKLK4oVwHZWBmOs2NDSKEc9ThN8hUVAw"
+    api = st.secret(Gemini key)
     genai.configure(api_key=api)
     generation_config = {
         "temperature": 1,
