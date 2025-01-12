@@ -1,7 +1,7 @@
 pyaudio
 streamlit
 wave
-speech_recognition
+SpeechRecognition
 google-generativeai
 qdrant_client
 sentence-transformers
