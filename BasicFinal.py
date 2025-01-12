@@ -175,7 +175,7 @@ def main():
     num_doubts = st.number_input("Enter number of doubts you want to ask:", min_value=1, step=1, value=1)
 
     # Gemini API configuration
-    api = st.secret(Gemini key)
+    api = st.secret(Gemini_Key)
     genai.configure(api_key=api)
     generation_config = {
         "temperature": 1,
@@ -206,7 +206,7 @@ def main():
         model2 = genai.GenerativeModel(
             model_name="gemini-2.0-flash-exp",
             generation_config=generation_config,
-            system_instruction=f'Generate {num_questions} questions in the form Q1...\nQ2...\nQ3...'
+            system_instruction=f'Generate {num_questions} questions in the form Q1...\nQ2...\nQ3... and nothing else'
         )
         chatsession = model2.start_chat(history=[])
         response2 = chatsession.send_message(response.text)
@@ -215,7 +215,7 @@ def main():
         model3 = genai.GenerativeModel(
             model_name="gemini-2.0-flash-exp",
             generation_config=generation_config,
-            system_instruction=f'Generate answers to the {num_questions} questions using: {response.text}'
+            system_instruction=f'Generate answers to the {num_questions} questions using: {response.text} in the format Ans1..\nAns2...\nAns3... nothing else'
         )
         chatsession = model3.start_chat(history=[])
         response3 = chatsession.send_message(response2.text)
@@ -239,14 +239,10 @@ def main():
         Questions = response2.text.split("\n")
         Answers = response3.text.split("\n")
 
-        for i in range(min(num_questions, len(Questions))):
-            st.markdown(f'''
-            <div class="qa-container">
-                <div class="question">{Questions[i]}</div>
-                <div class="answer">{Answers[i]}</div>
-            </div>
-            ''', unsafe_allow_html=True)
-
+        for i in range(0,min(num_questions, len(Questions))):
+            st.write(Questions[i])
+            st.write(" "*1000)
+            st.write(Answers[i])
         # Doubts section
         st.markdown('<div class="section-title">Ask a Question</div>', unsafe_allow_html=True)
         for i in range(num_doubts):
