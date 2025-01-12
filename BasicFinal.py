@@ -9,7 +9,7 @@ from qdrant_client.models import VectorParams, ScoredPoint
 from sentence_transformers import SentenceTransformer
 from qdrant_client.http.models import PointStruct
 
-
+   
 # Custom CSS styling
 def local_css():
     st.markdown("""
@@ -142,6 +142,11 @@ def transcribe_audio(filename):
 def main():
     st.set_page_config(page_title="IITD Note Maker", page_icon="📝", layout="wide")
     local_css()
+    @st.cache_resource
+    def load_model():
+        model = SentenceTransformer('all-mpnet-base-v2')
+        return model
+    model=load_modal() 
 
     # Title
     st.markdown('<h1 class="main-title">IITD Note Maker: Intelligent Class Companion</h1>', unsafe_allow_html=True)
@@ -251,7 +256,7 @@ def main():
             if query:
                 # Qdrant search logic
                 client = QdrantClient(":memory:")
-                model = SentenceTransformer('all-mpnet-base-v2')
+                
                 notes = st.session_state.notes
                 chunks = notes.split(".\n")
                 chunksf = []
