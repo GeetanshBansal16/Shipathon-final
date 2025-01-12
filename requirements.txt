@@ -1,0 +1,7 @@
+pyaudio
+streamlit
+wave
+speech_recognition
+google-generativeai
+qdrant_client
+sentence-transformers
