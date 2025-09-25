@@ -1,9 +1,9 @@
-pyaudio
-streamlit
-wave
-SpeechRecognition
+streamlit==1.27.0
+pyaudio==0.2.13
+SpeechRecognition==3.11.0
 google-generativeai
-qdrant_client
-sentence-transformers
-pandas
+qdrant-client==1.5.1
+sentence-transformers==2.2.2
 numpy
+scipy
+regex
