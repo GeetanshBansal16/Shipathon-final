@@ -1,15 +1,15 @@
 import streamlit as st
-import pyaudio
+from streamlit_webrtc import webrtc_streamer, AudioProcessorBase, WebRtcMode
 import wave
-import speech_recognition as sr
 import os
+import speech_recognition as sr
 import google.generativeai as genai
 from qdrant_client import QdrantClient
-from qdrant_client.models import VectorParams
+from qdrant_client.models import VectorParams, ScoredPoint
 from sentence_transformers import SentenceTransformer
 from qdrant_client.http.models import PointStruct
 import re
-
+import numpy as np
 
 # Custom CSS styling
 def local_css():
@@ -20,7 +20,7 @@ def local_css():
             -webkit-background-clip: text !important;
             -webkit-text-fill-color: transparent !important;
             font-size: 40px !important;
-            font-weight: bold !important;
+            font-w: bold !important;
             text-align: center !important;
             padding: 20px 0 !important;
             font-family: 'Arial Black', sans-serif !important;
@@ -33,7 +33,7 @@ def local_css():
             color: white;
             border: none;
             border-radius: 10px;
-            font-weight: bold;
+            font-w: bold;
             transition: all 0.3s ease;
             margin: 10px 0;
         }
@@ -47,7 +47,7 @@ def local_css():
         .section-title {
             color: #2c3e50;
             font-size: 24px !important;
-            font-weight: bold !important;
+            font-w: bold !important;
             margin: 20px 0 !important;
             padding-bottom: 10px;
             border-bottom: 2px solid #3498db;
@@ -71,7 +71,7 @@ def local_css():
 
         .question {
             color: #2c3e50;
-            font-weight: bold;
+            font-w: bold;
             margin-bottom: 10px;
         }
 
@@ -88,41 +88,25 @@ if 'run' not in st.session_state:
     st.session_state.run = False
 
 
-# Recording function
-def record_audio(filename, record_seconds=5):
-    FORMAT = pyaudio.paInt16
-    CHANNELS = 1
-    RATE = 16000
-    CHUNK = 1024
+# Audio Processor for streamlit-webrtc
+class AudioRecorder(AudioProcessorBase):
+    def __init__(self):
+        self.frames = []
 
-    audio = pyaudio.PyAudio()
+    def recv(self, frame):
+        audio = frame.to_ndarray()
+        self.frames.append(audio)
+        return frame
 
-    stream = audio.open(format=FORMAT,
-                        channels=CHANNELS,
-                        rate=RATE,
-                        input=True,
-                        frames_per_buffer=CHUNK)
 
-    st.write("Recording...")
-
-    frames = []
-
-    for _ in range(0, int(RATE / CHUNK * record_seconds)):
-        data = stream.read(CHUNK)
-        frames.append(data)
-
-    st.write("Recording finished.")
-
-    stream.stop_stream()
-    stream.close()
-    audio.terminate()
-
-    wf = wave.open(filename, 'wb')
-    wf.setnchannels(CHANNELS)
-    wf.setsampwidth(audio.get_sample_size(FORMAT))
-    wf.setframerate(RATE)
-    wf.writeframes(b''.join(frames))
-    wf.close()
+def save_audio(frames, filename="recorded_audio.wav", rate=16000):
+    audio_data = np.concatenate(frames, axis=0)
+    audio_data = (audio_data * 32767).astype(np.int16)
+    with wave.open(filename, 'wb') as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(rate)
+        wf.writeframes(audio_data.tobytes())
 
 
 # Transcription function
@@ -153,9 +137,21 @@ def main():
     st.markdown('<div class="section-title">Audio Recording</div>', unsafe_allow_html=True)
     record_seconds = st.number_input("Enter recording duration (in seconds):", min_value=1, step=1, value=5)
 
-    if st.button("Start Recording"):
-        record_audio(filename, record_seconds=record_seconds)
-        st.audio(filename)
+    # WebRTC streamer
+    audio_recorder = AudioRecorder()
+    webrtc_ctx = webrtc_streamer(
+        key="audio",
+        mode=WebRtcMode.SENDONLY,
+        audio_processor_factory=lambda: audio_recorder,
+        media_stream_constraints={"audio": True, "video": False},
+        async_processing=True,
+    )
+
+    if webrtc_ctx.state.playing:
+        if st.button("Save Recording"):
+            save_audio(audio_recorder.frames, filename=filename)
+            st.audio(filename)
+            st.success("Audio saved successfully!")
 
     # Transcription
     if st.button("Transcribe Audio"):
@@ -175,11 +171,16 @@ def main():
     num_questions = st.number_input("Enter number of questions to generate:", min_value=1, step=1, value=5)
     num_doubts = st.number_input("Enter number of doubts you want to ask:", min_value=1, step=1, value=1)
 
+    # Configure API key safely
     try:
         genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
+        api_available = True
     except Exception as e:
-        st.error(f"Failed to configure API. Please check your API key. Error: {e}")
-        st.stop()
+        api_available = False
+
+    if not api_available:
+        st.warning("Gemini API key has been exhausted. Note generation and Q/A will not work.")
+        return
 
     generation_config = {
         "temperature": 1,
@@ -190,32 +191,28 @@ def main():
     }
 
     if 'transcription' in st.session_state:
-        # --- WRAP ENTIRE GENERATION LOGIC IN ONE TRY-EXCEPT BLOCK ---
-        try:
-            transcription = st.session_state.transcription
+        transcription = st.session_state.transcription
 
-            # Model for notes creation
-            with st.spinner('Generating notes...'):
-                model1 = genai.GenerativeModel(
-                    model_name="gemini-1.5-flash",  # Using a stable, recommended model
-                    generation_config=generation_config,
-                    system_instruction='you are an expert in creating notes with a heading from any text and do not give any options '
-                )
-                chatsession = model1.start_chat(history=[])
-                response = chatsession.send_message(transcription)
-                st.session_state.notes = response.text
+        # Model for notes creation
+        model1 = genai.GenerativeModel(
+            model_name="gemini-2.0-flash-exp",
+            generation_config=generation_config,
+            system_instruction='you are an expert in creating notes with a heading from any text and do not give any options '
+        )
+        chatsession = model1.start_chat(history=[])
+        response = chatsession.send_message(transcription)
+        st.session_state.notes = response.text
 
-            # Save to file
-            with open("output.txt", "w") as output:
-                output.write(response.text)
+        # Save to file
+        output = open("output.txt", "w")
+        output.write(response.text)
 
-            # ------------------- UPDATED Q/A GENERATION ------------------- #
-            # Model for question generation
-            with st.spinner('Generating questions...'):
-                model2 = genai.GenerativeModel(
-                    model_name="gemini-1.5-flash",
-                    generation_config=generation_config,
-                    system_instruction=f"""
+        # ------------------- UPDATED Q/A GENERATION ------------------- #
+        # Model for question generation
+        model2 = genai.GenerativeModel(
+            model_name="gemini-2.0-flash-exp",
+            generation_config=generation_config,
+            system_instruction=f"""
 You are an expert in generating questions.
 Generate exactly {num_questions} questions from the given text.
 Output format must be:
@@ -225,16 +222,15 @@ Q2. <question 2>
 Q{num_questions}. <question {num_questions}>
 Do not add anything else, no extra text or explanation.
 """
-                )
-                chatsession2 = model2.start_chat(history=[])
-                response2 = chatsession2.send_message(response.text)
+        )
+        chatsession = model2.start_chat(history=[])
+        response2 = chatsession.send_message(response.text)
 
-            # Model for answer generation
-            with st.spinner('Generating answers...'):
-                model3 = genai.GenerativeModel(
-                    model_name="gemini-1.5-flash",
-                    generation_config=generation_config,
-                    system_instruction=f"""
+        # Model for answer generation
+        model3 = genai.GenerativeModel(
+            model_name="gemini-2.0-flash-exp",
+            generation_config=generation_config,
+            system_instruction=f"""
 You are an expert in generating answers to questions based on context.
 Given context:
 {response.text}
@@ -245,99 +241,97 @@ Ans2. <answer 2>
 Ans{num_questions}. <answer {num_questions}>
 Do not add anything else.
 """
-                )
-                chatsession3 = model3.start_chat(history=[])
-                response3 = chatsession3.send_message(response2.text)
+        )
+        chatsession = model3.start_chat(history=[])
+        response3 = chatsession.send_message(response2.text)
 
-            # Display notes
-            st.markdown('<div class="section-title">Generated Notes</div>', unsafe_allow_html=True)
-            st.markdown('<div class="custom-container">', unsafe_allow_html=True)
-            st.write(st.session_state.notes)
-            st.markdown('</div>', unsafe_allow_html=True)
+        # Display notes
+        st.markdown('<div class="section-title">Generated Notes</div>', unsafe_allow_html=True)
+        st.markdown('<div class="custom-container">', unsafe_allow_html=True)
+        st.write(st.session_state.notes)
+        st.markdown('</div>', unsafe_allow_html=True)
 
-            # Download button
-            st.download_button(
-                label="Download Notes",
-                data=st.session_state.notes,
-                file_name="Your_notes.txt",
-                mime="text/plain"
-            )
+        # Download button
+        st.download_button(
+            label="Download Notes",
+            data=st.session_state.notes,
+            file_name="Your_notes.txt",
+            mime="text/plain"
+        )
 
-            # Display Q&A
-            st.markdown('<div class="section-title">Questions and Answers</div>', unsafe_allow_html=True)
+        # Display Q&A
+        st.markdown('<div class="section-title">Questions and Answers</div>', unsafe_allow_html=True)
 
-            Questions = [q.strip() for q in re.findall(r'Q\d+\.\s*(.*)', response2.text)]
-            Answers = [a.strip() for a in re.findall(r'Ans\d+\.\s*(.*)', response3.text)]
+        Questions = [q.strip() for q in re.findall(r'^Q\d+\.\s*(.*)', response2.text, flags=re.MULTILINE)]
+        Answers = [a.strip() for a in re.findall(r'^Ans\d+\.\s*(.*)', response3.text, flags=re.MULTILINE)]
 
-            for i in range(min(len(Questions), len(Answers))):
-                st.markdown(f"**{Questions[i]}**")
-                st.markdown(f"{Answers[i]}")
-            # ------------------- END OF UPDATED Q/A GENERATION ------------------- #
+        for i in range(min(num_questions, len(Questions))):
+            st.markdown(f"**{Questions[i]}**")
+            st.markdown(f"{Answers[i]}")
+        # ------------------- END OF UPDATED Q/A GENERATION ------------------- #
 
-        # --- CATCH BLOCK FOR THE MAIN GENERATION LOGIC ---
-        except Exception as e:
-            st.error(f"An API error occurred: {e}")
-            st.warning(
-                "This may be due to an exhausted API key, rate limits, or content safety filters. Please check your Google AI Studio dashboard and try again.")
-            st.stop()
-
-        # Doubts section (This part is interactive, so it gets its own error handling)
+        # Doubts section
         st.markdown('<div class="section-title">Ask a Question</div>', unsafe_allow_html=True)
         for i in range(num_doubts):
-            query = st.text_input(f'Doubt {i + 1}:', key=f'doubt_{i}')
+            query = st.text_input(f'Doubt {i + 1}:')
 
             if query:
-                try:
-                    with st.spinner('Thinking...'):
-                        # Qdrant search logic
-                        client = QdrantClient(":memory:")
-                        model = SentenceTransformer('all-mpnet-base-v2')
-                        notes = st.session_state.notes
-                        chunks = [c for c in notes.split(".\n") if c]  # Filter out empty chunks
+                # Qdrant search logic
+                client = QdrantClient(":memory:")
+                model = SentenceTransformer('all-mpnet-base-v2')
+                notes = st.session_state.notes
+                chunks = notes.split(".\n")
+                chunksf = []
 
-                        if not chunks:
-                            st.warning("Could not find content in the notes to search.")
-                            continue
+                for i in range(len(chunks)):
+                    chunksf.append({"id": i, "content": chunks[i]})
+                for ch in chunksf:
+                    ch["embedding"] = model.encode(f"{ch['content']}").tolist()
 
-                        embeddings = model.encode(chunks).tolist()
+                client.recreate_collection(
+                    collection_name="chunksf",
+                    vectors_config=VectorParams(size=len(chunksf[0]['embedding']), distance="Cosine"),
+                )
 
-                        client.recreate_collection(
-                            collection_name="chunksf",
-                            vectors_config=VectorParams(size=len(embeddings[0]), distance="Cosine"),
+                client.upsert(
+                    collection_name="chunksf",
+                    points=[
+                        PointStruct(
+                            id=ch["id"],
+                            vector=ch["embedding"],
+                            payload={
+                                "id": ch["id"],
+                                "content": ch["content"],
+                            },
                         )
+                        for ch in chunksf
+                    ],
+                )
 
-                        client.upsert(
-                            collection_name="chunksf",
-                            points=[
-                                PointStruct(id=idx, vector=emb, payload={"content": chunk})
-                                for idx, (emb, chunk) in enumerate(zip(embeddings, chunks))
-                            ],
-                        )
+                query_embedding = model.encode(query).tolist()
+                search_results = client.search(
+                    collection_name="chunksf",
+                    query_vector=query_embedding,
+                    limit=3,
+                )
 
-                        query_embedding = model.encode(query).tolist()
-                        search_results = client.search(
-                            collection_name="chunksf",
-                            query_vector=query_embedding,
-                            limit=3,
-                        )
+                recommendations = ""
+                scor = -float("inf")
+                for result in search_results:
+                    song_id = result.id
+                    ch = next(ch for ch in chunksf if ch["id"] == result.id)
+                    if result.score > scor:
+                        scor = result.score
+                        recommendations = ch["content"]
 
-                        # Combine the content of the top results to form a context
-                        recommendations = " ".join([result.payload['content'] for result in search_results])
+                modelans = genai.GenerativeModel("gemini-2.0-flash-exp",
+                                                 system_instruction="you are an expert in answering questions based on a given context")
+                chatsessionans = modelans.start_chat(history=[])
+                responseans = chatsessionans.send_message(f"{query} Based on {recommendations}")
 
-                        modelans = genai.GenerativeModel("gemini-1.5-flash",
-                                                         system_instruction="You are an expert in answering questions based on a given context. Answer concisely.")
-                        chatsessionans = modelans.start_chat(history=[])
-                        responseans = chatsessionans.send_message(
-                            f"Based on the context: '{recommendations}', answer the following question: '{query}'")
-
-                        st.markdown('<div class="custom-container">', unsafe_allow_html=True)
-                        st.write(responseans.text)
-                        st.markdown('</div>', unsafe_allow_html=True)
-
-                # --- CATCH BLOCK FOR THE DOUBTS SECTION ---
-                except Exception as e:
-                    st.error(f"Could not answer your doubt due to an API error: {e}")
-                    st.warning("This may be due to an exhausted API key or other issues.")
+                st.markdown('<div class="custom-container">', unsafe_allow_html=True)
+                st.write(responseans.text)
+                st.markdown('</div>', unsafe_allow_html=True)
 
 
 if __name__ == "__main__":
